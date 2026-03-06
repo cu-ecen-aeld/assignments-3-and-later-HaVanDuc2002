@@ -1,0 +1,55 @@
+#!/bin/sh
+# aesdsocket-start-stop - SysV init script for aesdsocket daemon
+# Uses start-stop-daemon to start aesdsocket in daemon mode with -d option.
+# On stop, sends SIGTERM for graceful shutdown and cleanup.
+
+DAEMON=/usr/bin/aesdsocket
+DAEMON_ARGS="-d"
+NAME=aesdsocket
+
+start() {
+    printf 'Starting %s: ' "$NAME"
+    # Ensure /var/tmp exists for the data file
+    mkdir -p /var/tmp
+    # -x specifies the executable to run (required for BusyBox start-stop-daemon)
+    start-stop-daemon -S -x "$DAEMON" -- $DAEMON_ARGS
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "OK"
+    else
+        echo "FAIL"
+    fi
+    return "$status"
+}
+
+stop() {
+    printf 'Stopping %s: ' "$NAME"
+    start-stop-daemon -K -x "$DAEMON" -s TERM
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "OK"
+    else
+        echo "FAIL"
+    fi
+    return "$status"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        sleep 1
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
