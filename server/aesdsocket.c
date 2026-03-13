@@ -14,7 +14,15 @@
  * shutdown (no detached threads).
  *
  * Supports -d flag for daemon mode.
+ *
+ * Build switch:
+ *   USE_AESD_CHAR_DEVICE=1 (default) - use /dev/aesdchar, no timestamps
+ *   USE_AESD_CHAR_DEVICE=0           - use /var/tmp/aesdsocketdata, timestamps enabled
  */
+
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +43,11 @@
 #include <arpa/inet.h>
 
 #define PORT               "9000"
+#if USE_AESD_CHAR_DEVICE
+#define DATA_FILE          "/dev/aesdchar"
+#else
 #define DATA_FILE          "/var/tmp/aesdsocketdata"
+#endif
 #define BACKLOG            10
 #define RECV_BUF_SIZE      1024
 #define TIMESTAMP_INTERVAL 10   /* seconds between timestamp writes */
@@ -248,7 +260,11 @@ static void *client_thread(void *arg)
     pthread_mutex_lock(&file_mutex);
 
     /* Append received packet */
+#if USE_AESD_CHAR_DEVICE
+    int data_fd = open(DATA_FILE, O_WRONLY);
+#else
     int data_fd = open(DATA_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
+#endif
     if (data_fd == -1) {
         syslog(LOG_ERR, "open %s (write): %s", DATA_FILE, strerror(errno));
         ret = -1;
@@ -317,6 +333,7 @@ cleanup_recv:
 
 /* ─── timer thread (timestamp every TIMESTAMP_INTERVAL seconds) ───────────── */
 
+#if !USE_AESD_CHAR_DEVICE
 static void *timer_thread(void *arg)
 {
     (void)arg;
@@ -368,6 +385,7 @@ static void *timer_thread(void *arg)
 
     return NULL;
 }
+#endif /* !USE_AESD_CHAR_DEVICE */
 
 /* ─── main ────────────────────────────────────────────────────────────────── */
 
@@ -396,12 +414,14 @@ int main(int argc, char *argv[])
         close(server_fd); closelog(); return -1;
     }
 
-    /* Start the timestamp timer thread */
+    /* Start the timestamp timer thread (only when not using char device) */
+#if !USE_AESD_CHAR_DEVICE
     pthread_t timer_tid;
     if (pthread_create(&timer_tid, NULL, timer_thread, NULL) != 0) {
         syslog(LOG_ERR, "pthread_create timer: %s", strerror(errno));
         close(server_fd); closelog(); return -1;
     }
+#endif
 
     /* ── Accept loop ── */
     while (!caught_signal) {
@@ -448,13 +468,17 @@ int main(int argc, char *argv[])
     /* Wait for all client threads */
     list_join_all();
 
+#if !USE_AESD_CHAR_DEVICE
     /* Wait for timer thread (exits within 1 s via caught_signal check) */
     pthread_join(timer_tid, NULL);
+#endif
 
     if (server_fd != -1) { close(server_fd); server_fd = -1; }
 
+#if !USE_AESD_CHAR_DEVICE
     if (remove(DATA_FILE) != 0 && errno != ENOENT)
         syslog(LOG_ERR, "remove %s: %s", DATA_FILE, strerror(errno));
+#endif
 
     pthread_mutex_destroy(&file_mutex);
     pthread_mutex_destroy(&list_mutex);
