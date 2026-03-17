@@ -42,6 +42,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#if USE_AESD_CHAR_DEVICE
+#include "../aesd-char-driver/aesd_ioctl.h"
+#endif
+
 #define PORT               "9000"
 #if USE_AESD_CHAR_DEVICE
 #define DATA_FILE          "/dev/aesdchar"
@@ -255,6 +259,65 @@ static void *client_thread(void *arg)
     }
 
     if (packet_len == 0) goto cleanup_recv;
+
+#if USE_AESD_CHAR_DEVICE
+    /* Handle AESDCHAR_IOCSEEKTO ioctl command */
+    if (strncmp(packet_buf, "AESDCHAR_IOCSEEKTO:", 19) == 0) {
+        unsigned int write_cmd, write_cmd_offset;
+        struct aesd_seekto seekto;
+        int data_fd;
+
+        if (sscanf(packet_buf + 19, "%u,%u", &write_cmd, &write_cmd_offset) != 2) {
+            syslog(LOG_ERR, "Invalid AESDCHAR_IOCSEEKTO format");
+            goto cleanup_recv;
+        }
+
+        seekto.write_cmd = write_cmd;
+        seekto.write_cmd_offset = write_cmd_offset;
+
+        pthread_mutex_lock(&file_mutex);
+
+        data_fd = open(DATA_FILE, O_RDWR);
+        if (data_fd == -1) {
+            syslog(LOG_ERR, "open %s: %s", DATA_FILE, strerror(errno));
+            pthread_mutex_unlock(&file_mutex);
+            goto cleanup_recv;
+        }
+
+        if (ioctl(data_fd, AESDCHAR_IOCSEEKTO, &seekto) != 0) {
+            syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO: %s", strerror(errno));
+            close(data_fd);
+            pthread_mutex_unlock(&file_mutex);
+            goto cleanup_recv;
+        }
+
+        /* Read from the seeked position and send to client */
+        while (1) {
+            ssize_t r = read(data_fd, recv_buf, sizeof(recv_buf));
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                syslog(LOG_ERR, "read: %s", strerror(errno));
+                break;
+            }
+            if (r == 0) break;
+
+            for (ssize_t sent = 0; sent < r; ) {
+                ssize_t s = send(client_fd, recv_buf + sent, (size_t)(r - sent), 0);
+                if (s < 0) {
+                    if (errno == EINTR) continue;
+                    syslog(LOG_ERR, "send: %s", strerror(errno));
+                    goto ioctl_cleanup;
+                }
+                sent += s;
+            }
+        }
+
+    ioctl_cleanup:
+        close(data_fd);
+        pthread_mutex_unlock(&file_mutex);
+        goto cleanup_recv;
+    }
+#endif
 
     /* ── Lock mutex: append to file, then send full file ── */
     pthread_mutex_lock(&file_mutex);
